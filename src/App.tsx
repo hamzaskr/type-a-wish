@@ -12,7 +12,10 @@ import type { Category, MediaAttachment, Memory, Wish, WishStatus } from './doma
 import './App.css'
 
 const SECURITY_KEY = 'type-a-wish-security'
+const PROFILE_KEY = 'type-a-wish-profile'
+const GREETING_COOLDOWN_MS = 30 * 60 * 1000
 type SecuritySettings = { passcodeVerifier?: PasscodeVerifier; biometricCredentialId?: string }
+type UserProfile = { name: string; age: number; lastGreetingAt?: string }
 const readSecurity = (): SecuritySettings => {
   try {
     const parsed = JSON.parse(localStorage.getItem(SECURITY_KEY) ?? '{}') as SecuritySettings
@@ -22,6 +25,16 @@ const readSecurity = (): SecuritySettings => {
   }
 }
 const writeSecurity = (settings: SecuritySettings) => localStorage.setItem(SECURITY_KEY, JSON.stringify(settings))
+const readProfile = (): UserProfile | null => {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(PROFILE_KEY) ?? 'null') as Partial<UserProfile> | null
+    if (!parsed || typeof parsed.name !== 'string' || typeof parsed.age !== 'number') return null
+    return { name: parsed.name, age: parsed.age, lastGreetingAt: parsed.lastGreetingAt }
+  } catch {
+    return null
+  }
+}
+const writeProfile = (profile: UserProfile) => localStorage.setItem(PROFILE_KEY, JSON.stringify(profile))
 const prompts = [
   "Something I've always wanted to try…",
   'A moment I want to experience with someone I love.',
@@ -46,6 +59,8 @@ function App() {
   const [media, setMedia] = useState<MediaAttachment[]>([])
   const [locked, setLocked] = useState(false)
   const [security, setSecurity] = useState<SecuritySettings>(() => readSecurity())
+  const [showWelcome, setShowWelcome] = useState(() => readProfile() === null)
+  const [greeting, setGreeting] = useState('')
   const [ready, setReady] = useState(false)
 
   useEffect(() => {
@@ -62,6 +77,26 @@ function App() {
     }
     void load()
   }, [])
+
+  useEffect(() => {
+    const greetIfDue = () => {
+      const current = readProfile()
+      if (!current || !current.lastGreetingAt) return
+      if (Date.now() - new Date(current.lastGreetingAt).getTime() < GREETING_COOLDOWN_MS) return
+      const greeted = { ...current, lastGreetingAt: nowIso() }
+      writeProfile(greeted)
+      setGreeting(`Welcome back, ${greeted.name}.`)
+    }
+    greetIfDue()
+    document.addEventListener('visibilitychange', greetIfDue)
+    return () => document.removeEventListener('visibilitychange', greetIfDue)
+  }, [])
+
+  const completeWelcome = (name: string, age: number) => {
+    const nextProfile = { name, age, lastGreetingAt: nowIso() }
+    writeProfile(nextProfile)
+    setShowWelcome(false)
+  }
 
   const saveWish = async (wish: Wish) => {
     await db.wishes.put(wish)
@@ -134,13 +169,30 @@ function App() {
         </div>
       </aside>
       <main className="main-content">
+        {greeting && <div className="greeting-banner" role="status"><Sparkles size={17} /><span>{greeting}</span><button className="text-button" onClick={() => setGreeting('')} aria-label="Dismiss greeting">Dismiss</button></div>}
         <RoutesView wishes={wishes} memories={memories} media={media} categories={categories} saveWish={saveWish} saveMemory={saveMemory} deleteWish={deleteWish} attachMedia={attachMedia} removeMedia={removeMedia} security={security} setSecurity={setSecurity} lock={() => setLocked(true)} />
       </main>
       <nav className="bottom-nav" aria-label="Mobile navigation">
         {navItems.map(({ to, label, icon: Icon }) => <NavLink key={to} to={to} className={({ isActive }) => isActive ? 'bottom-link active' : 'bottom-link'}><Icon size={19} /><span>{label}</span></NavLink>)}
       </nav>
+      {showWelcome && <WelcomeDialog onComplete={completeWelcome} />}
     </div>
   )
+}
+
+function WelcomeDialog({ onComplete }: { onComplete: (name: string, age: number) => void }) {
+  const [name, setName] = useState('')
+  const [age, setAge] = useState('')
+  const [error, setError] = useState('')
+  const submit = (event: FormEvent) => {
+    event.preventDefault()
+    const trimmedName = name.trim()
+    const parsedAge = Number(age)
+    if (trimmedName.length < 2) { setError('Please enter at least two characters for your name.'); return }
+    if (!Number.isInteger(parsedAge) || parsedAge < 13 || parsedAge > 120) { setError('Please enter an age between 13 and 120.'); return }
+    onComplete(trimmedName, parsedAge)
+  }
+  return <div className="welcome-backdrop"><section className="welcome-dialog" role="dialog" aria-modal="true" aria-labelledby="welcome-title"><div className="welcome-icon"><Sparkles size={22} /></div><p className="eyebrow">A SMALL HELLO</p><h1 id="welcome-title">Welcome to your atlas.</h1><p>What should we call you? This stays on this device and helps your atlas feel like yours.</p><form className="welcome-form" onSubmit={submit}><label><span>Your name</span><input autoFocus value={name} onChange={(event) => { setName(event.target.value); setError('') }} autoComplete="name" /></label><label><span>Your age</span><input type="number" min="13" max="120" value={age} onChange={(event) => { setAge(event.target.value); setError('') }} inputMode="numeric" /></label>{error && <p className="form-error" role="alert">{error}</p>}<button className="button primary" type="submit">Enter my atlas <ArrowLeft size={17} className="welcome-arrow" /></button></form><small>Used only to personalize your experience. It is never sent anywhere.</small></section></div>
 }
 
 function RoutesView(props: { wishes: Wish[]; memories: Memory[]; media: MediaAttachment[]; categories: Category[]; saveWish: (wish: Wish) => Promise<void>; saveMemory: (memory: Memory) => Promise<void>; deleteWish: (id: string) => Promise<void>; attachMedia: (ownerType: 'wish' | 'memory', ownerId: string, file: File) => Promise<void>; removeMedia: (mediaId: string) => Promise<void>; security: SecuritySettings; setSecurity: (settings: SecuritySettings) => void; lock: () => void }) {
@@ -250,28 +302,34 @@ function SettingsPage({ security, setSecurity, lock }: { security: SecuritySetti
   const [currentPasscode, setCurrentPasscode] = useState('')
   const [newPasscode, setNewPasscode] = useState('')
   const [message, setMessage] = useState('')
+  const [messageKind, setMessageKind] = useState<'error' | 'success'>('success')
+  const [busy, setBusy] = useState(false)
+  const showMessage = (nextMessage: string, kind: 'error' | 'success') => { setMessage(nextMessage); setMessageKind(kind) }
   const saveSettings = (next: SecuritySettings) => { writeSecurity(next); setSecurity(next) }
-  const enablePasscode = async () => { if (passcode.length < 4) { setMessage('Use at least 4 characters for a passcode.'); return }; saveSettings({ ...security, passcodeVerifier: await createPasscodeVerifier(passcode) }); setPasscode(''); setMessage('Passcode enabled.'); }
-  const resetPasscode = async () => { if (!security.passcodeVerifier || !await verifyPasscode(currentPasscode, security.passcodeVerifier)) { setMessage('The previous passcode is incorrect.'); return }; if (newPasscode.length < 4) { setMessage('Use at least 4 characters for the new passcode.'); return }; saveSettings({ ...security, passcodeVerifier: await createPasscodeVerifier(newPasscode) }); setCurrentPasscode(''); setNewPasscode(''); setMessage('Passcode changed.'); }
-  const disablePasscode = async () => { if (!security.passcodeVerifier || !await verifyPasscode(currentPasscode, security.passcodeVerifier)) { setMessage('Enter the current passcode to disable it.'); return }; saveSettings({ passcodeVerifier: undefined, biometricCredentialId: undefined }); setCurrentPasscode(''); setMessage('Passcode disabled. Your atlas is now no-passcode.'); }
+  const enablePasscode = async () => { if (passcode.length < 4) { showMessage('Use at least 4 characters for a passcode.', 'error'); return }; setBusy(true); try { saveSettings({ ...security, passcodeVerifier: await createPasscodeVerifier(passcode) }); setPasscode(''); showMessage('Passcode enabled. Your atlas is ready to protect.', 'success') } catch { showMessage('Passcode could not be created. Try again.', 'error') } finally { setBusy(false) } }
+  const resetPasscode = async () => { if (!security.passcodeVerifier || !await verifyPasscode(currentPasscode, security.passcodeVerifier)) { showMessage('The previous passcode is incorrect.', 'error'); return }; if (newPasscode.length < 4) { showMessage('Use at least 4 characters for the new passcode.', 'error'); return }; setBusy(true); try { saveSettings({ ...security, passcodeVerifier: await createPasscodeVerifier(newPasscode) }); setCurrentPasscode(''); setNewPasscode(''); showMessage('Passcode changed successfully.', 'success') } catch { showMessage('Passcode could not be changed. Try again.', 'error') } finally { setBusy(false) } }
+  const disablePasscode = async () => { if (!security.passcodeVerifier || !await verifyPasscode(currentPasscode, security.passcodeVerifier)) { showMessage('Enter the current passcode to disable it.', 'error'); return }; setBusy(true); saveSettings({ passcodeVerifier: undefined, biometricCredentialId: undefined }); setCurrentPasscode(''); showMessage('Passcode disabled. Your atlas is now no-passcode.', 'success'); setBusy(false) }
   const enableBiometric = async () => {
-    if (!security.passcodeVerifier) { setMessage('Set a passcode before enabling fingerprint or Face ID.'); return }
-    if (!biometricSupported()) { setMessage('Biometric authentication requires HTTPS and a browser with WebAuthn support.'); return }
-    try { saveSettings({ ...security, biometricCredentialId: await registerBiometric() }); setMessage('Biometric unlock enabled on this device.') } catch { setMessage('Biometric setup was cancelled or is unavailable on this device.') }
+    if (!security.passcodeVerifier) { showMessage('Set a passcode before enabling fingerprint or Face ID.', 'error'); return }
+    if (!biometricSupported()) { showMessage('Biometric authentication requires HTTPS and a browser with WebAuthn support.', 'error'); return }
+    setBusy(true)
+    try { saveSettings({ ...security, biometricCredentialId: await registerBiometric() }); showMessage('Biometric unlock enabled on this device.', 'success') } catch { showMessage('Biometric setup was cancelled or is unavailable on this device.', 'error') } finally { setBusy(false) }
   }
-  return <div className="page"><PageHeader eyebrow="YOUR SPACE" title="Settings" description="Keep your atlas private, portable, and yours." /><div className="settings-list"><section className="settings-card"><div className="settings-icon"><Lock size={20} /></div><div><h2>Privacy and security</h2><p>Passcode protection is optional and off by default. It protects this browser session; it is not a substitute for encrypted storage.</p>{!security.passcodeVerifier ? <div className="security-form"><input type="password" value={passcode} onChange={(event) => setPasscode(event.target.value)} placeholder="Create a passcode" aria-label="Create a passcode" /><button className="button secondary small" onClick={() => void enablePasscode()}>Enable passcode</button></div> : <><div className="security-form"><input type="password" value={currentPasscode} onChange={(event) => setCurrentPasscode(event.target.value)} placeholder="Current passcode" aria-label="Current passcode" /><input type="password" value={newPasscode} onChange={(event) => setNewPasscode(event.target.value)} placeholder="New passcode" aria-label="New passcode" /><button className="button secondary small" onClick={() => void resetPasscode()}>Change passcode</button><button className="button secondary small" onClick={() => void disablePasscode()}>Turn off passcode</button></div><button className="button primary small" onClick={lock}><Lock size={15} /> Lock now</button></>}{!security.biometricCredentialId && <button className="button secondary small" disabled={!security.passcodeVerifier} onClick={() => void enableBiometric()}>{!security.passcodeVerifier ? 'Set a passcode before enabling biometrics' : biometricSupported() ? 'Enable fingerprint / Face ID' : 'Biometric authentication unavailable'}</button>}{security.biometricCredentialId && <p className="security-success">Biometric unlock is enabled on this device.</p>}{message && <p className="media-error" role="status">{message}</p>}</div></section><section className="settings-card"><div className="settings-icon"><Archive size={20} /></div><div><h2>Backups and restore</h2><p>Browser storage is not a backup. Export an archive regularly and keep the recovery key somewhere safe.</p><button className="button secondary small" onClick={() => alert('Backup export is not yet available.')}>Manage backups</button></div></section><section className="settings-card"><div className="settings-icon"><Tag size={20} /></div><div><h2>Automatic lock</h2><p>Lock your atlas after a period of inactivity.</p><select value={timeout} onChange={(event) => setTimeoutValue(event.target.value)} aria-label="Automatic lock timeout">{['Immediately', '5 minutes', '15 minutes', 'Never'].map((value) => <option key={value}>{value}</option>)}</select></div></section></div></div>
+  return <div className="page"><PageHeader eyebrow="YOUR SPACE" title="Settings" description="Keep your atlas private, portable, and yours." /><div className="settings-list"><section className="settings-card"><div className="settings-icon"><Lock size={20} /></div><div><h2>Privacy and security</h2><p>Passcode protection is optional and off by default. It protects this browser session; it is not a substitute for encrypted storage.</p>{!security.passcodeVerifier ? <div className="security-form"><input type="password" value={passcode} onChange={(event) => { setPasscode(event.target.value); setMessage('') }} placeholder="Create a passcode" aria-label="Create a passcode" /><button className="button secondary small" disabled={busy} onClick={() => void enablePasscode()}>{busy ? 'Creating…' : 'Enable passcode'}</button></div> : <><div className="security-form"><input type="password" value={currentPasscode} onChange={(event) => { setCurrentPasscode(event.target.value); setMessage('') }} placeholder="Current passcode" aria-label="Current passcode" /><input type="password" value={newPasscode} onChange={(event) => { setNewPasscode(event.target.value); setMessage('') }} placeholder="New passcode" aria-label="New passcode" /><button className="button secondary small" disabled={busy} onClick={() => void resetPasscode()}>{busy ? 'Changing…' : 'Change passcode'}</button><button className="button secondary small" disabled={busy} onClick={() => void disablePasscode()}>Turn off passcode</button></div><button className="button primary small" disabled={busy} onClick={lock}><Lock size={15} /> Lock now</button></>}{!security.biometricCredentialId && <button className="button secondary small" disabled={!security.passcodeVerifier || busy} onClick={() => void enableBiometric()}>{!security.passcodeVerifier ? 'Set a passcode before enabling biometrics' : biometricSupported() ? busy ? 'Verifying device…' : 'Enable fingerprint / Face ID' : 'Biometric authentication unavailable'}</button>}{security.biometricCredentialId && <p className="security-success">Biometric unlock is enabled on this device.</p>}{message && <p className={messageKind === 'error' ? 'form-error' : 'security-success'} role={messageKind === 'error' ? 'alert' : 'status'}>{message}</p>}</div></section><section className="settings-card"><div className="settings-icon"><Archive size={20} /></div><div><h2>Backups and restore</h2><p>Browser storage is not a backup. Export an archive regularly and keep the recovery key somewhere safe.</p><button className="button secondary small" onClick={() => alert('Backup export is not yet available.')}>Manage backups</button></div></section><section className="settings-card"><div className="settings-icon"><Tag size={20} /></div><div><h2>Automatic lock</h2><p>Lock your atlas after a period of inactivity.</p><select value={timeout} onChange={(event) => setTimeoutValue(event.target.value)} aria-label="Automatic lock timeout">{['Immediately', '5 minutes', '15 minutes', 'Never'].map((value) => <option key={value}>{value}</option>)}</select></div></section></div></div>
 }
 
 function LockScreen({ security, onUnlock }: { security: SecuritySettings; onUnlock: () => void }) {
   const [value, setValue] = useState('')
   const [message, setMessage] = useState('')
-  const unlock = async (event: FormEvent) => { event.preventDefault(); if (security.passcodeVerifier && !await verifyPasscode(value, security.passcodeVerifier)) { setMessage('That passcode is incorrect.'); return }; onUnlock() }
+  const [busy, setBusy] = useState(false)
+  const unlock = async (event: FormEvent) => { event.preventDefault(); if (!security.passcodeVerifier || busy) return; setBusy(true); setMessage(''); try { if (!await verifyPasscode(value, security.passcodeVerifier)) { setMessage('That passcode is incorrect.'); return }; onUnlock() } finally { setBusy(false) } }
   const biometricUnlock = async () => {
-    if (!security.biometricCredentialId) return
-    try { await authenticateBiometric(security.biometricCredentialId); onUnlock() } catch { setMessage('Biometric verification was cancelled or failed.') }
+    if (!security.biometricCredentialId || busy) return
+    setBusy(true)
+    try { await authenticateBiometric(security.biometricCredentialId); onUnlock() } catch { setMessage('Biometric verification was cancelled or failed. You can try again or use your passcode.') } finally { setBusy(false) }
   }
   const hasAuthentication = Boolean(security.passcodeVerifier || security.biometricCredentialId)
-  return <div className="lock-screen"><div className="lock-panel"><span className="lock-mark"><Unlock size={22} /></span><p className="eyebrow">YOUR PRIVATE ATLAS</p><h1>Welcome back.</h1>{security.passcodeVerifier && <form onSubmit={(event) => void unlock(event)}><p>Enter your passcode to return to the life you are making.</p><input type="password" value={value} onChange={(event) => setValue(event.target.value)} placeholder="Passcode" autoFocus aria-label="Passcode" /><button className="button primary" type="submit">Unlock atlas</button></form>}{security.biometricCredentialId && <button className="button secondary" onClick={() => void biometricUnlock()}>Use fingerprint / Face ID</button>}{!hasAuthentication && <><p>Your atlas has no passcode or biometric authentication. You can continue.</p><button className="button primary" onClick={onUnlock}>Continue</button></>}{message && <p className="media-error" role="alert">{message}</p>}</div></div>
+  return <div className="lock-screen"><div className="lock-panel"><span className="lock-mark"><Unlock size={22} /></span><p className="eyebrow">YOUR PRIVATE ATLAS</p><h1>Welcome back.</h1>{security.passcodeVerifier && <form onSubmit={(event) => void unlock(event)}><p>Enter your passcode to return to the life you are making.</p><input type="password" value={value} onChange={(event) => { setValue(event.target.value); setMessage('') }} placeholder="Passcode" autoFocus aria-label="Passcode" /><button className="button primary" disabled={busy} type="submit">{busy ? 'Checking…' : 'Unlock atlas'}</button></form>}{security.biometricCredentialId && <button className="button secondary" disabled={busy} onClick={() => void biometricUnlock()}>{busy ? 'Waiting for verification…' : 'Use fingerprint / Face ID'}</button>}{!hasAuthentication && <><p>Your atlas has no passcode or biometric authentication. You can continue.</p><button className="button primary" onClick={onUnlock}>Continue</button></>}{message && <p className="form-error" role="alert">{message}</p>}</div></div>
 }
 
 export default App
