@@ -429,8 +429,21 @@ function MemoriesPage({ memories }: { memories: Memory[] }) {
 }
 
 function MemoryEditor({ saveMemory }: { saveMemory: (memory: Memory) => Promise<void> }) {
-  const navigate = useNavigate(); const [title, setTitle] = useState(''); const [body, setBody] = useState('')
-  return <div className="page writing-page"><button className="back-link" onClick={() => navigate(-1)}><ArrowLeft size={17} /> Back</button><PageHeader eyebrow="A NEW MEMORY" title="What do you want to remember?" description="The ordinary moments often become the ones we keep." /><form className="writing-form" onSubmit={async (event) => { event.preventDefault(); if (!body.trim()) return; const now = new Date().toISOString(); await saveMemory({ id: crypto.randomUUID(), title: title.trim(), body: body.trim(), createdAt: now, updatedAt: now, categoryIds: [], tagIds: [], mediaIds: [], linkedWishIds: [] }); navigate('/memories') }}><label className="writing-field"><span>TITLE <em>(OPTIONAL)</em></span><input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="A name for this moment" /></label><label className="writing-field"><span>YOUR MEMORY</span><textarea autoFocus value={body} onChange={(event) => setBody(event.target.value)} placeholder="Tell it like you remember it…" rows={8} required /></label><button className="save-button" disabled={!body.trim()}>Save this memory</button></form></div>
+  const navigate = useNavigate(); const [title, setTitle] = useState(''); const [body, setBody] = useState(''); const [memoryDate, setMemoryDate] = useState(''); const [saving, setSaving] = useState(false); const [error, setError] = useState('')
+  const submit = async (event: FormEvent) => {
+    event.preventDefault()
+    if (!body.trim() || saving) return
+    setSaving(true); setError('')
+    try {
+      const now = new Date().toISOString()
+      await saveMemory({ id: crypto.randomUUID(), title: title.trim(), body: body.trim(), memoryDate: memoryDate || undefined, createdAt: now, updatedAt: now, categoryIds: [], tagIds: [], mediaIds: [], linkedWishIds: [] })
+      navigate('/memories')
+    } catch {
+      setError('Your memory could not be saved yet. Nothing has been lost. Try again.')
+      setSaving(false)
+    }
+  }
+  return <div className="page writing-page"><button className="back-link" onClick={() => navigate(-1)}><ArrowLeft size={17} /> Back</button><PageHeader eyebrow="A NEW MEMORY" title="What do you want to remember?" description="The ordinary moments often become the ones we keep." /><form className="writing-form" onSubmit={submit}><label className="writing-field"><span>TITLE <em>(OPTIONAL)</em></span><input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="A name for this moment" /></label><label className="writing-field"><span>WHEN DID THIS HAPPEN? <em>(OPTIONAL)</em></span><input type="date" value={memoryDate} onChange={(event) => setMemoryDate(event.target.value)} max={MAX_BIRTH_DATE} /></label><label className="writing-field"><span>YOUR MEMORY</span><textarea autoFocus value={body} onChange={(event) => setBody(event.target.value)} placeholder="Tell it like you remember it…" rows={8} required /></label>{error && <p className="form-error" role="alert">{error}</p>}<button className="save-button" disabled={!body.trim() || saving}>{saving ? 'Saving your memory…' : 'Save this memory'}</button></form></div>
 }
 
 function SettingsPage({ security, setSecurity, lock }: { security: SecuritySettings; setSecurity: (settings: SecuritySettings) => void; lock: () => void }) {
