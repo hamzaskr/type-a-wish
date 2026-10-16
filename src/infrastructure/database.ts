@@ -1,12 +1,14 @@
 import Dexie from 'dexie'
 import type { Table } from 'dexie'
 import type { Category, MediaAttachment, Memory, Wish } from '../domain/types'
+import type { PasscodeVerifier } from './security'
 
 class AtlasDatabase extends Dexie {
   wishes!: Table<Wish, string>
   memories!: Table<Memory, string>
   categories!: Table<Category, string>
   media!: Table<MediaAttachment, string>
+  settings!: Table<{ key: string; passcode?: PasscodeVerifier; biometricCredentialId?: string; autoLockMinutes?: number }, string>
 
   constructor() {
     super('type-a-wish')
@@ -20,6 +22,7 @@ class AtlasDatabase extends Dexie {
       memories: 'id, memoryDate, createdAt, updatedAt, *categoryIds, *linkedWishIds',
       categories: 'id, sortOrder, isPreset',
       media: 'id, ownerId, ownerType, mediaType, createdAt',
+      settings: 'key',
     })
   }
 }

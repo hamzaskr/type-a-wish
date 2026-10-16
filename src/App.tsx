@@ -7,9 +7,16 @@ import {
   WandSparkles,
 } from 'lucide-react'
 import { db, seedCategories } from './infrastructure/database'
+import { authenticateBiometric, biometricSupported, createPasscodeVerifier, registerBiometric, verifyPasscode, type PasscodeVerifier } from './infrastructure/security'
 import type { Category, MediaAttachment, Memory, Wish, WishStatus } from './domain/types'
 import './App.css'
 
+const SECURITY_KEY = 'type-a-wish-security'
+type SecuritySettings = { passcodeVerifier?: PasscodeVerifier; biometricCredentialId?: string }
+const readSecurity = (): SecuritySettings => {
+  try { return JSON.parse(localStorage.getItem(SECURITY_KEY) ?? '{}') as SecuritySettings } catch { return {} }
+}
+const writeSecurity = (settings: SecuritySettings) => localStorage.setItem(SECURITY_KEY, JSON.stringify(settings))
 const prompts = [
   "Something I've always wanted to try…",
   'A moment I want to experience with someone I love.',
@@ -33,6 +40,7 @@ function App() {
   const [categories, setCategories] = useState<Category[]>([])
   const [media, setMedia] = useState<MediaAttachment[]>([])
   const [locked, setLocked] = useState(false)
+  const [security, setSecurity] = useState<SecuritySettings>(() => readSecurity())
   const [ready, setReady] = useState(false)
 
   useEffect(() => {
@@ -101,7 +109,7 @@ function App() {
   }
 
   if (!ready) return <div className="loading-screen"><Sparkles size={24} /><p>Opening your atlas…</p></div>
-  if (locked) return <LockScreen onUnlock={() => setLocked(false)} />
+  if (locked) return <LockScreen security={security} onUnlock={() => setLocked(false)} />
 
   return (
     <div className="app-shell">
@@ -121,7 +129,7 @@ function App() {
         </div>
       </aside>
       <main className="main-content">
-        <RoutesView wishes={wishes} memories={memories} media={media} categories={categories} saveWish={saveWish} saveMemory={saveMemory} deleteWish={deleteWish} attachMedia={attachMedia} removeMedia={removeMedia} />
+        <RoutesView wishes={wishes} memories={memories} media={media} categories={categories} saveWish={saveWish} saveMemory={saveMemory} deleteWish={deleteWish} attachMedia={attachMedia} removeMedia={removeMedia} security={security} setSecurity={setSecurity} lock={() => setLocked(true)} />
       </main>
       <nav className="bottom-nav" aria-label="Mobile navigation">
         {navItems.map(({ to, label, icon: Icon }) => <NavLink key={to} to={to} className={({ isActive }) => isActive ? 'bottom-link active' : 'bottom-link'}><Icon size={19} /><span>{label}</span></NavLink>)}
@@ -130,7 +138,7 @@ function App() {
   )
 }
 
-function RoutesView(props: { wishes: Wish[]; memories: Memory[]; media: MediaAttachment[]; categories: Category[]; saveWish: (wish: Wish) => Promise<void>; saveMemory: (memory: Memory) => Promise<void>; deleteWish: (id: string) => Promise<void>; attachMedia: (ownerType: 'wish' | 'memory', ownerId: string, file: File) => Promise<void>; removeMedia: (mediaId: string) => Promise<void> }) {
+function RoutesView(props: { wishes: Wish[]; memories: Memory[]; media: MediaAttachment[]; categories: Category[]; saveWish: (wish: Wish) => Promise<void>; saveMemory: (memory: Memory) => Promise<void>; deleteWish: (id: string) => Promise<void>; attachMedia: (ownerType: 'wish' | 'memory', ownerId: string, file: File) => Promise<void>; removeMedia: (mediaId: string) => Promise<void>; security: SecuritySettings; setSecurity: (settings: SecuritySettings) => void; lock: () => void }) {
   const location = useLocation()
   if (location.pathname === '/wishes/new') return <WishEditor categories={props.categories} saveWish={props.saveWish} />
   if (location.pathname === '/memories/new') return <MemoryEditor saveMemory={props.saveMemory} />
@@ -141,7 +149,7 @@ function RoutesView(props: { wishes: Wish[]; memories: Memory[]; media: MediaAtt
   if (location.pathname.startsWith('/wishes/')) return <WishDetail wishes={props.wishes} categories={props.categories} media={props.media} saveWish={props.saveWish} deleteWish={props.deleteWish} attachMedia={props.attachMedia} removeMedia={props.removeMedia} />
   if (location.pathname === '/wishes') return <WishesPage {...props} />
   if (location.pathname === '/memories') return <MemoriesPage memories={props.memories} />
-  if (location.pathname === '/settings') return <SettingsPage />
+  if (location.pathname === '/settings') return <SettingsPage security={props.security} setSecurity={props.setSecurity} lock={props.lock} />
   return <AtlasPage wishes={props.wishes} categories={props.categories} />
 }
 
@@ -231,14 +239,32 @@ function MemoryEditor({ saveMemory }: { saveMemory: (memory: Memory) => Promise<
   return <div className="page writing-page"><button className="back-link" onClick={() => navigate(-1)}><ArrowLeft size={17} /> Back</button><PageHeader eyebrow="A NEW MEMORY" title="What do you want to remember?" description="The ordinary moments often become the ones we keep." /><form className="writing-form" onSubmit={async (event) => { event.preventDefault(); if (!body.trim()) return; const now = new Date().toISOString(); await saveMemory({ id: crypto.randomUUID(), title: title.trim(), body: body.trim(), createdAt: now, updatedAt: now, categoryIds: [], tagIds: [], mediaIds: [], linkedWishIds: [] }); navigate('/memories') }}><label className="writing-field"><span>TITLE <em>(OPTIONAL)</em></span><input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="A name for this moment" /></label><label className="writing-field"><span>YOUR MEMORY</span><textarea autoFocus value={body} onChange={(event) => setBody(event.target.value)} placeholder="Tell it like you remember it…" rows={8} required /></label><button className="save-button" disabled={!body.trim()}>Save this memory</button></form></div>
 }
 
-function SettingsPage() {
+function SettingsPage({ security, setSecurity, lock }: { security: SecuritySettings; setSecurity: (settings: SecuritySettings) => void; lock: () => void }) {
   const [timeout, setTimeoutValue] = useState('5 minutes')
-  return <div className="page"><PageHeader eyebrow="YOUR SPACE" title="Settings" description="Keep your atlas private, portable, and yours." /><div className="settings-list"><section className="settings-card"><div className="settings-icon"><Lock size={20} /></div><div><h2>Privacy and security</h2><p>Your content is stored on this device. The app lock is a calm layer of privacy for shared moments.</p><button className="button secondary small" onClick={() => alert('Encryption setup will be enabled during first-launch security setup.')}>Learn about encryption</button></div></section><section className="settings-card"><div className="settings-icon"><Archive size={20} /></div><div><h2>Backups and restore</h2><p>Browser storage is not a backup. Export an archive regularly and keep the recovery key somewhere safe.</p><button className="button secondary small" onClick={() => alert('Backup export is next in the data-management workflow.')}>Manage backups</button></div></section><section className="settings-card"><div className="settings-icon"><Tag size={20} /></div><div><h2>Automatic lock</h2><p>Lock your atlas after a period of inactivity.</p><select value={timeout} onChange={(event) => setTimeoutValue(event.target.value)} aria-label="Automatic lock timeout">{['Immediately', '5 minutes', '15 minutes', 'Never'].map((value) => <option key={value}>{value}</option>)}</select></div></section></div></div>
+  const [passcode, setPasscode] = useState('')
+  const [currentPasscode, setCurrentPasscode] = useState('')
+  const [newPasscode, setNewPasscode] = useState('')
+  const [message, setMessage] = useState('')
+  const saveSettings = (next: SecuritySettings) => { writeSecurity(next); setSecurity(next) }
+  const enablePasscode = async () => { if (passcode.length < 4) { setMessage('Use at least 4 characters for a passcode.'); return }; saveSettings({ ...security, passcodeVerifier: await createPasscodeVerifier(passcode) }); setPasscode(''); setMessage('Passcode enabled.'); }
+  const resetPasscode = async () => { if (!security.passcodeVerifier || !await verifyPasscode(currentPasscode, security.passcodeVerifier)) { setMessage('The previous passcode is incorrect.'); return }; if (newPasscode.length < 4) { setMessage('Use at least 4 characters for the new passcode.'); return }; saveSettings({ ...security, passcodeVerifier: await createPasscodeVerifier(newPasscode) }); setCurrentPasscode(''); setNewPasscode(''); setMessage('Passcode changed.'); }
+  const disablePasscode = async () => { if (!security.passcodeVerifier || !await verifyPasscode(currentPasscode, security.passcodeVerifier)) { setMessage('Enter the current passcode to disable it.'); return }; saveSettings({ ...security, passcodeVerifier: undefined }); setCurrentPasscode(''); setMessage('Passcode disabled. Your atlas is now no-passcode.'); }
+  const enableBiometric = async () => {
+    if (!biometricSupported()) { setMessage('Biometric authentication requires HTTPS and a browser with WebAuthn support.'); return }
+    try { saveSettings({ ...security, biometricCredentialId: await registerBiometric() }); setMessage('Biometric unlock enabled on this device.') } catch { setMessage('Biometric setup was cancelled or is unavailable on this device.') }
+  }
+  return <div className="page"><PageHeader eyebrow="YOUR SPACE" title="Settings" description="Keep your atlas private, portable, and yours." /><div className="settings-list"><section className="settings-card"><div className="settings-icon"><Lock size={20} /></div><div><h2>Privacy and security</h2><p>Passcode protection is optional and off by default. It protects this browser session; it is not a substitute for encrypted storage.</p>{!security.passcodeVerifier ? <div className="security-form"><input type="password" value={passcode} onChange={(event) => setPasscode(event.target.value)} placeholder="Create a passcode" aria-label="Create a passcode" /><button className="button secondary small" onClick={() => void enablePasscode()}>Enable passcode</button></div> : <><div className="security-form"><input type="password" value={currentPasscode} onChange={(event) => setCurrentPasscode(event.target.value)} placeholder="Current passcode" aria-label="Current passcode" /><input type="password" value={newPasscode} onChange={(event) => setNewPasscode(event.target.value)} placeholder="New passcode" aria-label="New passcode" /><button className="button secondary small" onClick={() => void resetPasscode()}>Change passcode</button><button className="button secondary small" onClick={() => void disablePasscode()}>Turn off passcode</button></div><button className="button primary small" onClick={lock}><Lock size={15} /> Lock now</button></>}{!security.biometricCredentialId && <button className="button secondary small" onClick={() => void enableBiometric()}>{biometricSupported() ? 'Enable fingerprint / Face ID' : 'Biometric authentication unavailable'}</button>}{security.biometricCredentialId && <p className="security-success">Biometric unlock is enabled on this device.</p>}{message && <p className="media-error" role="status">{message}</p>}</div></section><section className="settings-card"><div className="settings-icon"><Archive size={20} /></div><div><h2>Backups and restore</h2><p>Browser storage is not a backup. Export an archive regularly and keep the recovery key somewhere safe.</p><button className="button secondary small" onClick={() => alert('Backup export is not yet available.')}>Manage backups</button></div></section><section className="settings-card"><div className="settings-icon"><Tag size={20} /></div><div><h2>Automatic lock</h2><p>Lock your atlas after a period of inactivity.</p><select value={timeout} onChange={(event) => setTimeoutValue(event.target.value)} aria-label="Automatic lock timeout">{['Immediately', '5 minutes', '15 minutes', 'Never'].map((value) => <option key={value}>{value}</option>)}</select></div></section></div></div>
 }
 
-function LockScreen({ onUnlock }: { onUnlock: () => void }) {
+function LockScreen({ security, onUnlock }: { security: SecuritySettings; onUnlock: () => void }) {
   const [value, setValue] = useState('')
-  return <div className="lock-screen"><div className="lock-panel"><span className="lock-mark"><Unlock size={22} /></span><p className="eyebrow">YOUR PRIVATE ATLAS</p><h1>Welcome back.</h1><p>Enter your passcode to return to the life you are making.</p><input type="password" value={value} onChange={(event) => setValue(event.target.value)} placeholder="Passcode" autoFocus /><button className="button primary" onClick={onUnlock} disabled={!value}>Unlock atlas</button><button className="text-button" onClick={() => alert('Recovery flow will be available once security setup is enabled.')}>Use recovery key</button></div></div>
+  const [message, setMessage] = useState('')
+  const unlock = async (event: FormEvent) => { event.preventDefault(); if (security.passcodeVerifier && !await verifyPasscode(value, security.passcodeVerifier)) { setMessage('That passcode is incorrect.'); return }; onUnlock() }
+  const biometricUnlock = async () => {
+    if (!security.biometricCredentialId) return
+    try { await authenticateBiometric(security.biometricCredentialId); onUnlock() } catch { setMessage('Biometric verification was cancelled or failed.') }
+  }
+  return <div className="lock-screen"><div className="lock-panel"><span className="lock-mark"><Unlock size={22} /></span><p className="eyebrow">YOUR PRIVATE ATLAS</p><h1>Welcome back.</h1>{security.passcodeVerifier ? <form onSubmit={(event) => void unlock(event)}><p>Enter your passcode to return to the life you are making.</p><input type="password" value={value} onChange={(event) => setValue(event.target.value)} placeholder="Passcode" autoFocus aria-label="Passcode" /><button className="button primary" type="submit">Unlock atlas</button></form> : <><p>Your atlas has no passcode. You can continue.</p><button className="button primary" onClick={onUnlock}>Continue</button></>}{security.biometricCredentialId && <button className="button secondary" onClick={() => void biometricUnlock()}>Use fingerprint / Face ID</button>}{message && <p className="media-error" role="alert">{message}</p>}</div></div>
 }
 
 export default App
