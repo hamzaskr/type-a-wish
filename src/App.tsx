@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { NavLink, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import {
@@ -70,6 +70,42 @@ const navItems = [
   { to: '/settings', label: 'Settings', icon: SettingsIcon },
 ]
 const nowIso = () => new Date().toISOString()
+const useReducedMotion = () => {
+  const [reduced, setReduced] = useState(false)
+  useEffect(() => {
+    const query = window.matchMedia('(prefers-reduced-motion: reduce)')
+    const update = () => setReduced(query.matches)
+    update()
+    query.addEventListener('change', update)
+    return () => query.removeEventListener('change', update)
+  }, [])
+  return reduced
+}
+
+function CompassMark() {
+  const reduced = useReducedMotion()
+  const [rotation, setRotation] = useState(0)
+  const [motionEnabled, setMotionEnabled] = useState(false)
+  const markRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    if (!motionEnabled || reduced || !('DeviceOrientationEvent' in window)) return
+    const onOrientation = (event: DeviceOrientationEvent) => setRotation(Math.max(-12, Math.min(12, (event.gamma ?? 0) / 4)))
+    window.addEventListener('deviceorientation', onOrientation)
+    return () => window.removeEventListener('deviceorientation', onOrientation)
+  }, [motionEnabled, reduced])
+  const requestMotion = async () => {
+    const orientation = window.DeviceOrientationEvent as typeof DeviceOrientationEvent & { requestPermission?: () => Promise<'granted' | 'denied'> }
+    if (orientation.requestPermission) {
+      try { if (await orientation.requestPermission() !== 'granted') return } catch { return }
+    }
+    setMotionEnabled(true)
+  }
+  return <button type="button" className={`compass-mark ${motionEnabled ? 'motion-enabled' : ''}`} ref={markRef} onPointerMove={(event) => { if (!reduced) setRotation((event.clientX / window.innerWidth - .5) * 10) }} onPointerLeave={() => setRotation(0)} onClick={() => void requestMotion()} aria-label="Enable device compass motion" title="Tap to enable gentle device motion"><Compass size={17} style={{ transform: `rotate(${rotation}deg)`, transition: reduced ? 'none' : 'transform 450ms cubic-bezier(.2,.8,.2,1)' }} /></button>
+}
+
+function AmbientAtmosphere() {
+  return <div className="ambient-atmosphere" aria-hidden="true"><span className="atmosphere-blob blob-one" /><span className="atmosphere-blob blob-two" /><span className="atmosphere-contours" /></div>
+}
 
 function App() {
   const [wishes, setWishes] = useState<Wish[]>([])
@@ -200,12 +236,13 @@ function App() {
 
   return (
     <div className="app-shell">
+      <AmbientAtmosphere />
       <header className="mobile-header">
-        <NavLink to="/" className="wordmark"><span className="wordmark-mark"><Compass size={17} /></span> type a wish</NavLink>
+        <NavLink to="/" className="wordmark"><CompassMark /> type a wish</NavLink>
         <button className="icon-button" onClick={() => setLocked(true)} aria-label="Lock your atlas"><Lock size={18} /></button>
       </header>
       <aside className="sidebar">
-        <NavLink to="/" className="wordmark"><span className="wordmark-mark"><Compass size={17} /></span> type a wish</NavLink>
+        <NavLink to="/" className="wordmark"><CompassMark /> type a wish</NavLink>
         <p className="sidebar-kicker">YOUR PRIVATE ATLAS</p>
         <nav aria-label="Primary navigation" className="primary-nav">
           {navItems.map(({ to, label, icon: Icon }) => <NavLink key={to} to={to} className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}><Icon size={18} /><span>{label}</span></NavLink>)}
@@ -248,36 +285,57 @@ function BirthdayPrompt({ moment, message, onDismiss, onAction }: { moment: Birt
 
 function RoutesView(props: { wishes: Wish[]; memories: Memory[]; media: MediaAttachment[]; categories: Category[]; saveWish: (wish: Wish) => Promise<void>; saveMemory: (memory: Memory) => Promise<void>; deleteWish: (id: string) => Promise<void>; attachMedia: (ownerType: 'wish' | 'memory', ownerId: string, file: File) => Promise<void>; removeMedia: (mediaId: string) => Promise<void>; security: SecuritySettings; setSecurity: (settings: SecuritySettings) => void; lock: () => void }) {
   const location = useLocation()
-  if (location.pathname === '/wishes/new') return <WishEditor categories={props.categories} saveWish={props.saveWish} />
-  if (location.pathname === '/memories/new') return <MemoryEditor saveMemory={props.saveMemory} />
-  if (location.pathname.endsWith('/edit')) {
+  let content: ReactNode
+  if (location.pathname === '/wishes/new') content = <WishEditor categories={props.categories} saveWish={props.saveWish} />
+  else if (location.pathname === '/memories/new') content = <MemoryEditor saveMemory={props.saveMemory} />
+  else if (location.pathname.endsWith('/edit')) {
     const wishId = location.pathname.split('/')[2]
-    return <WishEditor initialWish={props.wishes.find((wish) => wish.id === wishId)} categories={props.categories} saveWish={props.saveWish} />
-  }
-  if (location.pathname.startsWith('/wishes/')) return <WishDetail wishes={props.wishes} categories={props.categories} media={props.media} saveWish={props.saveWish} deleteWish={props.deleteWish} attachMedia={props.attachMedia} removeMedia={props.removeMedia} />
-  if (location.pathname === '/wishes') return <WishesPage {...props} />
-  if (location.pathname === '/memories') return <MemoriesPage memories={props.memories} />
-  if (location.pathname === '/settings') return <SettingsPage security={props.security} setSecurity={props.setSecurity} lock={props.lock} />
-  return <AtlasPage wishes={props.wishes} categories={props.categories} />
+    content = <WishEditor initialWish={props.wishes.find((wish) => wish.id === wishId)} categories={props.categories} saveWish={props.saveWish} />
+  } else if (location.pathname.startsWith('/wishes/')) content = <WishDetail wishes={props.wishes} categories={props.categories} media={props.media} saveWish={props.saveWish} deleteWish={props.deleteWish} attachMedia={props.attachMedia} removeMedia={props.removeMedia} />
+  else if (location.pathname === '/wishes') content = <WishesPage {...props} />
+  else if (location.pathname === '/memories') content = <MemoriesPage memories={props.memories} />
+  else if (location.pathname === '/settings') content = <SettingsPage security={props.security} setSecurity={props.setSecurity} lock={props.lock} />
+  else content = <AtlasPage wishes={props.wishes} categories={props.categories} memories={props.memories} />
+  return <div className="page-transition" key={`${location.pathname}${location.search}`}>{content}</div>
 }
 
 function PageHeader({ eyebrow, title, description, action }: { eyebrow?: string; title: string; description?: string; action?: ReactNode }) {
   return <header className="page-header"><div>{eyebrow && <p className="eyebrow">{eyebrow}</p>}<h1>{title}</h1>{description && <p className="page-description">{description}</p>}</div>{action}</header>
 }
 
-function AtlasPage({ wishes, categories }: { wishes: Wish[]; categories: Category[] }) {
+function AtlasPage({ wishes, categories, memories }: { wishes: Wish[]; categories: Category[]; memories: Memory[] }) {
   const navigate = useNavigate()
+  const [today] = useState(() => new Date())
+  const [showResurfacing, setShowResurfacing] = useState(true)
+  const weather = wishes.length === 0 ? 'A quiet sky, waiting for its first star.' : wishes.filter((wish) => wish.status === 'Done').length > 0 ? 'Some stars have already become memories.' : wishes.filter((wish) => wish.status === 'Planning').length > 0 ? 'The map is beginning to take shape.' : 'The horizon is wide.'
+  const resurfaced = memories.find((memory) => {
+    if (!memory.memoryDate) return false
+    const memoryDate = new Date(memory.memoryDate)
+    return memoryDate.getMonth() === today.getMonth() && memoryDate.getDate() === today.getDate() && memoryDate.getFullYear() < today.getFullYear()
+  })
   return <div className="page atlas-page">
     <PageHeader eyebrow="YOUR PRIVATE ATLAS" title="A life in the making." description="A place for everything you hope to experience, create, and remember." />
+    <div className="atlas-weather"><Sparkles size={16} /><span>{weather}</span></div>
     <button className="hero-action" onClick={() => navigate('/wishes/new')}><Plus size={24} /><span><strong>Add a wish</strong><small>Start with a sentence. Let the rest come later.</small></span><ArrowLeft className="action-arrow" size={20} /></button>
+    <WishConstellation wishes={wishes} onSelect={(id) => navigate(`/wishes/${id}`)} />
+    {resurfaced && showResurfacing && <MemoryResurfacing memory={resurfaced} onDismiss={() => setShowResurfacing(false)} onOpen={() => navigate('/memories')} />}
     <section className="section-block"><div className="section-heading"><h2>Your world, so far</h2><NavLink to="/wishes">Explore all <span aria-hidden="true">→</span></NavLink></div>
       <div className="category-grid">{categories.map((category, index) => {
         const count = wishes.filter((wish) => wish.categoryIds.includes(category.id)).length
-        return <NavLink to={`/wishes?category=${category.id}`} className={`category-card category-${index % 4}`} key={category.id}><span className="category-icon">{index === 0 ? <Compass /> : index === 1 ? <Archive /> : index === 2 ? <Heart /> : <Sparkles />}</span><span className="category-name">{category.name}</span><span className="category-copy">{category.description}</span><span className="category-count">{count ? `${count} ${count === 1 ? 'wish' : 'wishes'}` : 'A space for what matters.'}</span></NavLink>
+        return <NavLink to={`/wishes?category=${category.id}`} className={`category-card category-${index % 4}`} key={category.id}><span className="category-icon">{index === 0 ? <Compass /> : index === 1 ? <Archive /> : index === 2 ? <Heart /> : <Sparkles />}<span className="category-orbit" /></span><span className="category-name">{category.name}</span><span className="category-copy">{category.description}</span><span className="category-count">{count ? `${count} ${count === 1 ? 'wish' : 'wishes'}` : 'A space for what matters.'}</span></NavLink>
       })}</div>
     </section>
     {wishes.length === 0 && <div className="empty-card"><WandSparkles size={20} /><div><h3>There is room for your first wish.</h3><p>It can be ambitious, ordinary, or still taking shape. One sentence is enough.</p></div></div>}
   </div>
+}
+
+function WishConstellation({ wishes, onSelect }: { wishes: Wish[]; onSelect: (id: string) => void }) {
+  const reduced = useReducedMotion()
+  return <section className="constellation" aria-label="Your wish constellation"><div className="constellation-heading"><div><p className="eyebrow">YOUR CONSTELLATION</p><h2>What is calling you?</h2></div><span>{wishes.length ? `${wishes.length} ${wishes.length === 1 ? 'star' : 'stars'}` : 'First star awaits'}</span></div><div className="constellation-sky">{wishes.length === 0 ? <button className="constellation-empty" onClick={() => onSelect('new')}><span className="constellation-star pulse-star" />Your first wish will become the first star.</button> : wishes.map((wish, index) => <button key={wish.id} className={`constellation-star constellation-${wish.status.toLowerCase()}`} style={{ left: `${15 + ((index * 37) % 72)}%`, top: `${25 + ((index * 53) % 48)}%`, animationDelay: reduced ? '0s' : `${index * 120}ms` }} onClick={() => onSelect(wish.id)} title={wish.title} aria-label={`Open wish: ${wish.title}`}>{wish.pinned && <span className="star-ring" />}</button>)}</div></section>
+}
+
+function MemoryResurfacing({ memory, onDismiss, onOpen }: { memory: Memory; onDismiss: () => void; onOpen: () => void }) {
+  return <aside className="memory-resurfacing" role="status"><p className="eyebrow">A MEMORY FOUND YOU</p><p>One year ago, you remembered “{memory.title || memory.body.slice(0, 72)}”.</p><button className="button secondary small" onClick={onOpen}>Revisit memory</button><button className="text-button" onClick={onDismiss}>Not now</button></aside>
 }
 
 function WishesPage({ wishes, categories }: { wishes: Wish[]; categories: Category[] }) {
@@ -296,7 +354,8 @@ function WishesPage({ wishes, categories }: { wishes: Wish[]; categories: Catego
 
 function WishCard({ wish, categories, compact }: { wish: Wish; categories: Category[]; compact?: boolean }) {
   const navigate = useNavigate()
-  return <button className={`wish-card ${compact ? 'compact' : ''}`} onClick={() => navigate(`/wishes/${wish.id}`)}><div className="wish-card-meta"><span>{wish.status}</span>{wish.pinned && <span aria-label="Pinned">• pinned</span>}</div><h3>{wish.title}</h3>{wish.body && <p>{wish.body}</p>}<div className="tag-row">{wish.categoryIds.map((id) => <span key={id}>{categories.find((category) => category.id === id)?.name}</span>)}</div></button>
+  const reduced = useReducedMotion()
+  return <button className={`wish-card ${compact ? 'compact' : ''}`} onPointerMove={(event) => { if (reduced) return; const rect = event.currentTarget.getBoundingClientRect(); event.currentTarget.style.setProperty('--tilt-x', `${((event.clientY - rect.top) / rect.height - .5) * -1.2}deg`); event.currentTarget.style.setProperty('--tilt-y', `${((event.clientX - rect.left) / rect.width - .5) * 1.2}deg`) }} onPointerLeave={(event) => { event.currentTarget.style.setProperty('--tilt-x', '0deg'); event.currentTarget.style.setProperty('--tilt-y', '0deg') }} onClick={() => navigate(`/wishes/${wish.id}`)}><div className="wish-card-meta"><span>{wish.status}</span>{wish.pinned && <span aria-label="Pinned">• pinned</span>}</div><h3>{wish.title}</h3>{wish.body && <p>{wish.body}</p>}<div className="tag-row">{wish.categoryIds.map((id) => <span key={id}>{categories.find((category) => category.id === id)?.name}</span>)}</div></button>
 }
 
 function WishEditor({ categories, saveWish, initialWish }: { categories: Category[]; saveWish: (wish: Wish) => Promise<void>; initialWish?: Wish }) {
@@ -306,15 +365,42 @@ function WishEditor({ categories, saveWish, initialWish }: { categories: Categor
   const [prompt, setPrompt] = useState(() => prompts[Math.floor(Math.random() * prompts.length)])
   const [selectedCategories, setSelectedCategories] = useState<string[]>(initialWish?.categoryIds ?? [])
   const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState('')
+  const [saved, setSaved] = useState(false)
   const submit = async (event: FormEvent) => {
     event.preventDefault()
     if (!title.trim() || saving) return
-    setSaving(true)
-    const now = new Date().toISOString()
-    await saveWish({ id: initialWish?.id ?? crypto.randomUUID(), title: title.trim(), body: body.trim(), status: initialWish?.status ?? 'Dreaming', categoryIds: selectedCategories, tagIds: initialWish?.tagIds ?? [], createdAt: initialWish?.createdAt ?? now, updatedAt: now, completedAt: initialWish?.completedAt, targetDate: initialWish?.targetDate, pinned: initialWish?.pinned ?? false, sortOrder: initialWish?.sortOrder ?? Date.now(), mediaIds: initialWish?.mediaIds ?? [] })
-    navigate(-1)
+    setSaving(true); setSaveError('')
+    try {
+      const now = new Date().toISOString()
+      await saveWish({ id: initialWish?.id ?? crypto.randomUUID(), title: title.trim(), body: body.trim(), status: initialWish?.status ?? 'Dreaming', categoryIds: selectedCategories, tagIds: initialWish?.tagIds ?? [], createdAt: initialWish?.createdAt ?? now, updatedAt: now, completedAt: initialWish?.completedAt, targetDate: initialWish?.targetDate, pinned: initialWish?.pinned ?? false, sortOrder: initialWish?.sortOrder ?? Date.now(), mediaIds: initialWish?.mediaIds ?? [] })
+      setSaved(true)
+      window.setTimeout(() => navigate(-1), 650)
+    } catch {
+      setSaveError('Your wish could not be saved yet. Nothing has been lost. Try again.')
+      setSaving(false)
+    }
   }
-  return <div className="page writing-page"><button className="back-link" onClick={() => navigate(-1)}><ArrowLeft size={17} /> Back</button><PageHeader eyebrow="A NEW WISH" title="What do you want to experience?" description="It doesn't have to make sense to anyone else. It only has to mean something to you." /><form onSubmit={submit} className="writing-form"><label className="writing-field"><span>YOUR WISH</span><textarea autoFocus value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Write whatever comes to mind…" rows={3} required /></label><label className="writing-field"><span>THE STORY BEHIND IT <em>(OPTIONAL)</em></span><textarea value={body} onChange={(event) => setBody(event.target.value)} placeholder="Why does this matter to you? Write a little, or leave it for another day." rows={4} /></label><div className="prompt-card"><div className="prompt-title"><WandSparkles size={18} /> Need a little inspiration?</div><p>“{prompt}”</p><button type="button" className="text-button" onClick={() => setPrompt(prompts[(prompts.indexOf(prompt) + 1) % prompts.length])}>Another prompt <span>↗</span></button><small>Optional</small></div><fieldset className="category-picker"><legend>ADD DETAILS <em>(OPTIONAL)</em></legend><div className="category-options">{categories.map((category) => <button type="button" className={selectedCategories.includes(category.id) ? 'selected' : ''} key={category.id} onClick={() => setSelectedCategories((current) => current.includes(category.id) ? current.filter((id) => id !== category.id) : [...current, category.id])}>{selectedCategories.includes(category.id) && <Check size={15} />}{category.name}</button>)}</div></fieldset><button className="save-button" disabled={!title.trim() || saving}>{saving ? 'Saving…' : 'Save to my atlas'}</button></form></div>
+  return <div className="page writing-page"><button className="back-link" onClick={() => navigate(-1)}><ArrowLeft size={17} /> Back</button><PageHeader eyebrow="A NEW WISH" title="What do you want to experience?" description="It doesn't have to make sense to anyone else. It only has to mean something to you." /><form onSubmit={submit} className="writing-form"><label className="writing-field"><span>YOUR WISH</span><textarea autoFocus value={title} onChange={(event) => { setTitle(event.target.value); setSaveError('') }} placeholder="Write whatever comes to mind…" rows={3} required /></label><label className="writing-field"><span>THE STORY BEHIND IT <em>(OPTIONAL)</em></span><textarea value={body} onChange={(event) => setBody(event.target.value)} placeholder="Why does this matter to you? Write a little, or leave it for another day." rows={4} /></label><div className="prompt-card"><div className="prompt-title"><WandSparkles size={18} /> Need a little inspiration?</div><p>“{prompt}”</p><button type="button" className="text-button" onClick={() => setPrompt(prompts[(prompts.indexOf(prompt) + 1) % prompts.length])}>Another prompt <span>↗</span></button><small>Optional</small></div><WritingSoundscape /> <fieldset className="category-picker"><legend>ADD DETAILS <em>(OPTIONAL)</em></legend><div className="category-options">{categories.map((category) => <button type="button" className={selectedCategories.includes(category.id) ? 'selected' : ''} key={category.id} onClick={() => setSelectedCategories((current) => current.includes(category.id) ? current.filter((id) => id !== category.id) : [...current, category.id])}>{selectedCategories.includes(category.id) && <Check size={15} />}{category.name}</button>)}</div></fieldset>{saveError && <p className="form-error" role="alert">{saveError}</p>}<button className={`save-button ${saved ? 'saved' : ''}`} disabled={!title.trim() || saving}>{saved ? 'Saved to your atlas ✓' : saving ? 'Saving your wish…' : 'Save to my atlas'}</button></form></div>
+}
+
+function WritingSoundscape() {
+  const [enabled, setEnabled] = useState(false)
+  const audioRef = useRef<AudioContext | null>(null)
+  const oscillatorRef = useRef<OscillatorNode | null>(null)
+  const toggle = () => {
+    if (enabled) { oscillatorRef.current?.stop(); oscillatorRef.current = null; audioRef.current?.close(); audioRef.current = null; setEnabled(false); return }
+    try {
+      const context = new AudioContext()
+      const oscillator = context.createOscillator()
+      const gain = context.createGain()
+      oscillator.type = 'sine'; oscillator.frequency.value = 174; gain.gain.value = 0.008
+      oscillator.connect(gain).connect(context.destination); oscillator.start()
+      audioRef.current = context; oscillatorRef.current = oscillator; setEnabled(true)
+    } catch { setEnabled(false) }
+  }
+  useEffect(() => () => { oscillatorRef.current?.stop(); void audioRef.current?.close() }, [])
+  return <button type="button" className={`soundscape-toggle ${enabled ? 'enabled' : ''}`} onClick={toggle} aria-pressed={enabled}><span className="soundscape-wave" /> {enabled ? 'Quiet soundscape on' : 'Optional quiet soundscape'}</button>
 }
 
 function WishDetail({ wishes, categories, media, saveWish, deleteWish, attachMedia, removeMedia }: { wishes: Wish[]; categories: Category[]; media: MediaAttachment[]; saveWish: (wish: Wish) => Promise<void>; deleteWish: (id: string) => Promise<void>; attachMedia: (ownerType: 'wish' | 'memory', ownerId: string, file: File) => Promise<void>; removeMedia: (mediaId: string) => Promise<void> }) {
@@ -326,7 +412,7 @@ function WishDetail({ wishes, categories, media, saveWish, deleteWish, attachMed
   const [mediaError, setMediaError] = useState('')
   if (!wish) return <div className="page"><button className="back-link" onClick={() => navigate(-1)}><ArrowLeft size={17} /> Back</button><div className="empty-card"><p>That wish could not be found.</p></div></div>
   const complete = async () => { const timestamp = nowIso(); await saveWish({ ...wish, status: 'Done', completedAt: timestamp, updatedAt: timestamp }); }
-  return <div className="page detail-page"><button className="back-link" onClick={() => navigate(-1)}><ArrowLeft size={17} /> Back to wishes</button><article className="detail-card"><div className="wish-card-meta"><span>A WISH · {wish.status.toUpperCase()}</span></div><h1>{wish.title}</h1>{wish.body && <p className="detail-body">{wish.body}</p>}<div className="tag-row">{wish.categoryIds.map((categoryId) => <span key={categoryId}>{categories.find((category) => category.id === categoryId)?.name}</span>)}</div></article><section className="detail-section"><BookHeart size={22} /><div><h2>The story behind it</h2><p>An optional reflection can grow as this dream becomes more meaningful.</p></div></section><section className="detail-section media-section"><ImagePlus size={22} /><div><h2>Photos, audio and video</h2><p>Files stay in this browser and are attached to this wish.</p><div className="media-buttons"><label className="button secondary small">Add photo<input type="file" accept="image/*" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void attachMedia('wish', wish.id, file).catch((error: Error) => setMediaError(error.message)) }} /></label><label className="button secondary small">Add audio<input type="file" accept="audio/*" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void attachMedia('wish', wish.id, file).catch((error: Error) => setMediaError(error.message)) }} /></label><label className="button secondary small">Add video<input type="file" accept="video/*" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void attachMedia('wish', wish.id, file).catch((error: Error) => setMediaError(error.message)) }} /></label></div>{mediaError && <p className="media-error" role="alert">{mediaError}</p>}<div className="media-list">{wishMedia.map((item) => <MediaPreview key={item.id} item={item} onRemove={removeMedia} />)}</div></div></section><div className="detail-actions"><button className="button secondary" onClick={() => navigate(`/wishes/${wish.id}/edit`)}><WandSparkles size={17} /> Edit wish</button><button className="button primary" onClick={complete} disabled={wish.status === 'Done'}><Check size={18} /> {wish.status === 'Done' ? 'Already done' : 'Mark as done'}</button></div><button className="danger-link" onClick={async () => { if (window.confirm('Delete this wish? Linked memories will stay safe.')) { await deleteWish(wish.id); navigate('/wishes') } }}><Trash2 size={15} /> Delete this wish</button></div>
+  return <div className="page detail-page"><button className="back-link" onClick={() => navigate(-1)}><ArrowLeft size={17} /> Back to wishes</button><article className="detail-card story-reveal"><div className="wish-card-meta"><span>A WISH · {wish.status.toUpperCase()}</span></div><h1>{wish.title}</h1>{wish.body && <p className="detail-body">{wish.body}</p>}<div className="tag-row">{wish.categoryIds.map((categoryId) => <span key={categoryId}>{categories.find((category) => category.id === categoryId)?.name}</span>)}</div></article><div className="story-progress" aria-hidden="true" /><section className="detail-section story-reveal"><BookHeart size={22} /><div><p className="eyebrow">CHAPTER ONE</p><h2>The story behind it</h2><p>An optional reflection can grow as this dream becomes more meaningful.</p></div></section><section className="detail-section media-section story-reveal"><ImagePlus size={22} /><div><p className="eyebrow">CHAPTER TWO</p><h2>Photos, audio and video</h2><p>Files stay in this browser and are attached to this wish.</p><div className="media-buttons"><label className="button secondary small">Add photo<input type="file" accept="image/*" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void attachMedia('wish', wish.id, file).catch((error: Error) => setMediaError(error.message)) }} /></label><label className="button secondary small">Add audio<input type="file" accept="audio/*" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void attachMedia('wish', wish.id, file).catch((error: Error) => setMediaError(error.message)) }} /></label><label className="button secondary small">Add video<input type="file" accept="video/*" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void attachMedia('wish', wish.id, file).catch((error: Error) => setMediaError(error.message)) }} /></label></div>{mediaError && <p className="media-error" role="alert">{mediaError}</p>}<div className="media-list">{wishMedia.map((item) => <MediaPreview key={item.id} item={item} onRemove={removeMedia} />)}</div></div></section><div className="detail-actions"><button className="button secondary" onClick={() => navigate(`/wishes/${wish.id}/edit`)}><WandSparkles size={17} /> Edit wish</button><button className="button primary" onClick={complete} disabled={wish.status === 'Done'}><Check size={18} /> {wish.status === 'Done' ? 'Already done' : 'Mark as done'}</button></div><button className="danger-link" onClick={async () => { if (window.confirm('Delete this wish? Linked memories will stay safe.')) { await deleteWish(wish.id); navigate('/wishes') } }}><Trash2 size={15} /> Delete this wish</button></div>
 }
 
 function MediaPreview({ item, onRemove }: { item: MediaAttachment; onRemove: (id: string) => Promise<void> }) {
