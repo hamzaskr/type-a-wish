@@ -14,8 +14,10 @@ import './App.css'
 const SECURITY_KEY = 'type-a-wish-security'
 const PROFILE_KEY = 'type-a-wish-profile'
 const GREETING_COOLDOWN_MS = 30 * 60 * 1000
+const MAX_BIRTH_DATE = new Date().toISOString().slice(0, 10)
 type SecuritySettings = { passcodeVerifier?: PasscodeVerifier; biometricCredentialId?: string }
-type UserProfile = { name: string; age: number; lastGreetingAt?: string }
+type BirthdayMoment = 'before' | 'day' | 'after'
+type UserProfile = { name: string; birthDate: string; lastGreetingAt?: string; lastBirthdayNoticeKey?: string }
 const readSecurity = (): SecuritySettings => {
   try {
     const parsed = JSON.parse(localStorage.getItem(SECURITY_KEY) ?? '{}') as SecuritySettings
@@ -28,13 +30,30 @@ const writeSecurity = (settings: SecuritySettings) => localStorage.setItem(SECUR
 const readProfile = (): UserProfile | null => {
   try {
     const parsed = JSON.parse(localStorage.getItem(PROFILE_KEY) ?? 'null') as Partial<UserProfile> | null
-    if (!parsed || typeof parsed.name !== 'string' || typeof parsed.age !== 'number') return null
-    return { name: parsed.name, age: parsed.age, lastGreetingAt: parsed.lastGreetingAt }
+    if (!parsed || typeof parsed.name !== 'string' || typeof parsed.birthDate !== 'string') return null
+    return { name: parsed.name, birthDate: parsed.birthDate, lastGreetingAt: parsed.lastGreetingAt, lastBirthdayNoticeKey: parsed.lastBirthdayNoticeKey }
   } catch {
     return null
   }
 }
 const writeProfile = (profile: UserProfile) => localStorage.setItem(PROFILE_KEY, JSON.stringify(profile))
+const ageAtDate = (birthDate: string, today = new Date()) => {
+  const birth = new Date(`${birthDate}T00:00:00`)
+  let age = today.getFullYear() - birth.getFullYear()
+  const birthdayPassed = today.getMonth() > birth.getMonth() || (today.getMonth() === birth.getMonth() && today.getDate() >= birth.getDate())
+  if (!birthdayPassed) age -= 1
+  return age
+}
+const birthdayMoment = (birthDate: string, today = new Date()): BirthdayMoment | null => {
+  const birth = new Date(`${birthDate}T00:00:00`)
+  if (Number.isNaN(birth.getTime())) return null
+  const birthday = new Date(today.getFullYear(), birth.getMonth(), birth.getDate())
+  const daysFromBirthday = Math.round((today.getTime() - birthday.getTime()) / 86_400_000)
+  if (daysFromBirthday === 0) return 'day'
+  if (daysFromBirthday >= -7 && daysFromBirthday < 0) return 'before'
+  if (daysFromBirthday > 0 && daysFromBirthday <= 7) return 'after'
+  return null
+}
 const prompts = [
   "Something I've always wanted to try…",
   'A moment I want to experience with someone I love.',
@@ -59,9 +78,12 @@ function App() {
   const [media, setMedia] = useState<MediaAttachment[]>([])
   const [locked, setLocked] = useState(false)
   const [security, setSecurity] = useState<SecuritySettings>(() => readSecurity())
+  const [profile, setProfile] = useState<UserProfile | null>(() => readProfile())
   const [showWelcome, setShowWelcome] = useState(() => readProfile() === null)
   const [greeting, setGreeting] = useState('')
+  const [birthdayPrompt, setBirthdayPrompt] = useState<{ moment: BirthdayMoment; message: string } | null>(null)
   const [ready, setReady] = useState(false)
+  const navigate = useNavigate()
 
   useEffect(() => {
     const load = async () => {
@@ -92,9 +114,34 @@ function App() {
     return () => document.removeEventListener('visibilitychange', greetIfDue)
   }, [])
 
-  const completeWelcome = (name: string, age: number) => {
-    const nextProfile = { name, age, lastGreetingAt: nowIso() }
+  useEffect(() => {
+    const checkBirthday = () => {
+      const current = readProfile()
+      if (!current) return
+      const moment = birthdayMoment(current.birthDate)
+      if (!moment) return
+      const year = new Date().getFullYear()
+      const noticeKey = `${year}-${moment}`
+      if (current.lastBirthdayNoticeKey === noticeKey) return
+      const messages = {
+        before: `Your birthday is coming up, ${current.name}. What would make this year feel like yours?`,
+        day: `Happy birthday, ${current.name}. What gift, adventure, or person are you wishing for today?`,
+        after: `Your birthday week is still unfolding, ${current.name}. What moment from it do you want to remember?`,
+      }
+      const nextProfile = { ...current, lastBirthdayNoticeKey: noticeKey }
+      writeProfile(nextProfile)
+      setProfile(nextProfile)
+      setBirthdayPrompt({ moment, message: messages[moment] })
+    }
+    checkBirthday()
+    document.addEventListener('visibilitychange', checkBirthday)
+    return () => document.removeEventListener('visibilitychange', checkBirthday)
+  }, [profile])
+
+  const completeWelcome = (name: string, birthDate: string) => {
+    const nextProfile = { name, birthDate, lastGreetingAt: nowIso() }
     writeProfile(nextProfile)
+    setProfile(nextProfile)
     setShowWelcome(false)
   }
 
@@ -170,6 +217,7 @@ function App() {
       </aside>
       <main className="main-content">
         {greeting && <div className="greeting-banner" role="status"><Sparkles size={17} /><span>{greeting}</span><button className="text-button" onClick={() => setGreeting('')} aria-label="Dismiss greeting">Dismiss</button></div>}
+        {birthdayPrompt && <BirthdayPrompt moment={birthdayPrompt.moment} message={birthdayPrompt.message} onDismiss={() => setBirthdayPrompt(null)} onAction={() => { setBirthdayPrompt(null); navigate(birthdayPrompt.moment === 'after' ? '/memories/new' : '/wishes/new') }} />}
         <RoutesView wishes={wishes} memories={memories} media={media} categories={categories} saveWish={saveWish} saveMemory={saveMemory} deleteWish={deleteWish} attachMedia={attachMedia} removeMedia={removeMedia} security={security} setSecurity={setSecurity} lock={() => setLocked(true)} />
       </main>
       <nav className="bottom-nav" aria-label="Mobile navigation">
@@ -180,19 +228,22 @@ function App() {
   )
 }
 
-function WelcomeDialog({ onComplete }: { onComplete: (name: string, age: number) => void }) {
+function WelcomeDialog({ onComplete }: { onComplete: (name: string, birthDate: string) => void }) {
   const [name, setName] = useState('')
-  const [age, setAge] = useState('')
+  const [birthDate, setBirthDate] = useState('')
   const [error, setError] = useState('')
   const submit = (event: FormEvent) => {
     event.preventDefault()
     const trimmedName = name.trim()
-    const parsedAge = Number(age)
     if (trimmedName.length < 2) { setError('Please enter at least two characters for your name.'); return }
-    if (!Number.isInteger(parsedAge) || parsedAge < 13 || parsedAge > 120) { setError('Please enter an age between 13 and 120.'); return }
-    onComplete(trimmedName, parsedAge)
+    if (!birthDate || ageAtDate(birthDate) < 13 || new Date(`${birthDate}T00:00:00`) > new Date()) { setError('Please enter a valid birth date. You must be at least 13.'); return }
+    onComplete(trimmedName, birthDate)
   }
-  return <div className="welcome-backdrop"><section className="welcome-dialog" role="dialog" aria-modal="true" aria-labelledby="welcome-title"><div className="welcome-icon"><Sparkles size={22} /></div><p className="eyebrow">A SMALL HELLO</p><h1 id="welcome-title">Welcome to your atlas.</h1><p>What should we call you? This stays on this device and helps your atlas feel like yours.</p><form className="welcome-form" onSubmit={submit}><label><span>Your name</span><input autoFocus value={name} onChange={(event) => { setName(event.target.value); setError('') }} autoComplete="name" /></label><label><span>Your age</span><input type="number" min="13" max="120" value={age} onChange={(event) => { setAge(event.target.value); setError('') }} inputMode="numeric" /></label>{error && <p className="form-error" role="alert">{error}</p>}<button className="button primary" type="submit">Enter my atlas <ArrowLeft size={17} className="welcome-arrow" /></button></form><small>Used only to personalize your experience. It is never sent anywhere.</small></section></div>
+  return <div className="welcome-backdrop"><section className="welcome-dialog" role="dialog" aria-modal="true" aria-labelledby="welcome-title"><div className="welcome-icon"><Sparkles size={22} /></div><p className="eyebrow">A SMALL HELLO</p><h1 id="welcome-title">Welcome to your atlas.</h1><p>What should we call you? This stays on this device and helps your atlas feel like yours.</p><form className="welcome-form" onSubmit={submit}><label><span>Your name</span><input autoFocus value={name} onChange={(event) => { setName(event.target.value); setError('') }} autoComplete="name" /></label><label><span>When were you born?</span><input type="date" value={birthDate} onChange={(event) => { setBirthDate(event.target.value); setError('') }} max={MAX_BIRTH_DATE} /></label>{birthDate && <small className="age-preview">Your atlas will remember that you are {ageAtDate(birthDate)}.</small>}{error && <p className="form-error" role="alert">{error}</p>}<button className="button primary" type="submit">Enter my atlas <ArrowLeft size={17} className="welcome-arrow" /></button></form><small>Used only to personalize your experience. It is never sent anywhere.</small></section></div>
+}
+
+function BirthdayPrompt({ moment, message, onDismiss, onAction }: { moment: BirthdayMoment; message: string; onDismiss: () => void; onAction: () => void }) {
+  return <aside className="birthday-prompt" role="status"><div className="birthday-icon"><Sparkles size={20} /></div><div><p className="eyebrow">{moment === 'day' ? 'TODAY IS YOUR DAY' : moment === 'before' ? 'A LITTLE SOMETHING AHEAD' : 'A NEW YEAR OF YOU'}</p><p>{message}</p><button className="button primary small" onClick={onAction}>{moment === 'after' ? 'Save this memory' : 'Add a birthday wish'}</button><button className="text-button" onClick={onDismiss}>Not now</button></div></aside>
 }
 
 function RoutesView(props: { wishes: Wish[]; memories: Memory[]; media: MediaAttachment[]; categories: Category[]; saveWish: (wish: Wish) => Promise<void>; saveMemory: (memory: Memory) => Promise<void>; deleteWish: (id: string) => Promise<void>; attachMedia: (ownerType: 'wish' | 'memory', ownerId: string, file: File) => Promise<void>; removeMedia: (mediaId: string) => Promise<void>; security: SecuritySettings; setSecurity: (settings: SecuritySettings) => void; lock: () => void }) {
