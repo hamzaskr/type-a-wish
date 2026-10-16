@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { FormEvent, ReactNode } from 'react'
+import type { ChangeEvent, FormEvent, ReactNode } from 'react'
 import { NavLink, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   Archive, ArrowLeft, BookHeart, Check, Compass, Filter, Heart, ImagePlus,
@@ -215,8 +215,19 @@ function App() {
     await db.media.put(attachment)
     setMedia((current) => [...current, attachment])
     if (ownerType === 'wish') {
-      const wish = wishes.find((item) => item.id === ownerId)
-      if (wish) await saveWish({ ...wish, mediaIds: [...wish.mediaIds, attachment.id], updatedAt: nowIso() })
+      const wish = await db.wishes.get(ownerId)
+      if (wish) {
+        const updated = { ...wish, mediaIds: [...wish.mediaIds, attachment.id], updatedAt: nowIso() }
+        await db.wishes.put(updated)
+        setWishes((current) => current.map((item) => item.id === ownerId ? updated : item))
+      }
+    } else {
+      const memory = await db.memories.get(ownerId)
+      if (memory) {
+        const updated = { ...memory, mediaIds: [...memory.mediaIds, attachment.id], updatedAt: nowIso() }
+        await db.memories.put(updated)
+        setMemories((current) => current.map((item) => item.id === ownerId ? updated : item))
+      }
     }
   }
 
@@ -228,6 +239,9 @@ function App() {
     if (attachment.ownerType === 'wish') {
       const wish = wishes.find((item) => item.id === attachment.ownerId)
       if (wish) await saveWish({ ...wish, mediaIds: wish.mediaIds.filter((id) => id !== mediaId), updatedAt: nowIso() })
+    } else {
+      const memory = memories.find((item) => item.id === attachment.ownerId)
+      if (memory) await saveMemory({ ...memory, mediaIds: memory.mediaIds.filter((id) => id !== mediaId), updatedAt: nowIso() })
     }
   }
 
@@ -287,13 +301,13 @@ function RoutesView(props: { wishes: Wish[]; memories: Memory[]; media: MediaAtt
   const location = useLocation()
   let content: ReactNode
   if (location.pathname === '/wishes/new') content = <WishEditor categories={props.categories} saveWish={props.saveWish} />
-  else if (location.pathname === '/memories/new') content = <MemoryEditor saveMemory={props.saveMemory} />
+  else if (location.pathname === '/memories/new') content = <MemoryEditor saveMemory={props.saveMemory} attachMedia={props.attachMedia} />
   else if (location.pathname.endsWith('/edit')) {
     const wishId = location.pathname.split('/')[2]
     content = <WishEditor initialWish={props.wishes.find((wish) => wish.id === wishId)} categories={props.categories} saveWish={props.saveWish} />
   } else if (location.pathname.startsWith('/wishes/')) content = <WishDetail wishes={props.wishes} categories={props.categories} media={props.media} saveWish={props.saveWish} deleteWish={props.deleteWish} attachMedia={props.attachMedia} removeMedia={props.removeMedia} />
   else if (location.pathname === '/wishes') content = <WishesPage {...props} />
-  else if (location.pathname === '/memories') content = <MemoriesPage memories={props.memories} />
+  else if (location.pathname === '/memories') content = <MemoriesPage memories={props.memories} media={props.media} attachMedia={props.attachMedia} removeMedia={props.removeMedia} />
   else if (location.pathname === '/settings') content = <SettingsPage security={props.security} setSecurity={props.setSecurity} lock={props.lock} />
   else content = <AtlasPage wishes={props.wishes} categories={props.categories} memories={props.memories} />
   return <div className="page-transition" key={`${location.pathname}${location.search}`}>{content}</div>
@@ -423,27 +437,30 @@ function MediaPreview({ item, onRemove }: { item: MediaAttachment; onRemove: (id
   return <div className="media-item">{url && (item.mediaType === 'image' ? <img src={url} alt={item.originalName} /> : item.mediaType === 'audio' ? <audio controls src={url} /> : <video controls src={url} />)}<div className="media-caption"><span>{item.originalName}</span><button className="danger-link" onClick={() => { if (window.confirm(`Remove ${item.originalName}?`)) void onRemove(item.id) }}><Trash2 size={14} /> Remove</button></div></div>
 }
 
-function MemoriesPage({ memories }: { memories: Memory[] }) {
+function MemoriesPage({ memories, media, removeMedia }: { memories: Memory[]; media: MediaAttachment[]; attachMedia: (ownerType: 'wish' | 'memory', ownerId: string, file: File) => Promise<void>; removeMedia: (mediaId: string) => Promise<void> }) {
   const navigate = useNavigate()
-  return <div className="page"><PageHeader eyebrow="YOUR MEMORIES" title="A life, as it happened." description="Little moments, long-awaited experiences, and things you don't want to forget." action={<button className="button primary" onClick={() => navigate('/memories/new')}><Plus size={18} /> Add a memory</button>} />{memories.length === 0 ? <div className="empty-card"><Heart size={20} /><div><h3>Keep a moment close.</h3><p>Save a memory from a wish, or record something that surprised you.</p></div></div> : <div className="memory-list">{memories.map((memory) => <article className="memory-item" key={memory.id}><div className="memory-mark"><Heart size={22} /></div><div><p className="eyebrow">{(memory.memoryDate ?? memory.createdAt).slice(0, 7)}</p><h2>{memory.title || 'A moment worth keeping'}</h2><p>{memory.body}</p></div></article>)}</div>}</div>
+  return <div className="page"><PageHeader eyebrow="YOUR MEMORIES" title="A life, as it happened." description="Little moments, long-awaited experiences, and things you don't want to forget." action={<button className="button primary" onClick={() => navigate('/memories/new')}><Plus size={18} /> Add a memory</button>} />{memories.length === 0 ? <div className="empty-card"><Heart size={20} /><div><h3>Keep a moment close.</h3><p>Save a memory from a wish, or record something that surprised you.</p></div></div> : <div className="memory-list">{memories.map((memory) => <article className="memory-item" key={memory.id}><div className="memory-mark"><Heart size={22} /></div><div><p className="eyebrow">{(memory.memoryDate ?? memory.createdAt).slice(0, 7)}</p><h2>{memory.title || 'A moment worth keeping'}</h2><p>{memory.body}</p>{memory.mediaIds.length > 0 && <div className="memory-media-list">{media.filter((item) => item.ownerType === 'memory' && item.ownerId === memory.id).map((item) => <MediaPreview key={item.id} item={item} onRemove={removeMedia} />)}</div>}</div></article>)}</div>}</div>
 }
 
-function MemoryEditor({ saveMemory }: { saveMemory: (memory: Memory) => Promise<void> }) {
-  const navigate = useNavigate(); const [title, setTitle] = useState(''); const [body, setBody] = useState(''); const [memoryDate, setMemoryDate] = useState(''); const [saving, setSaving] = useState(false); const [error, setError] = useState('')
+function MemoryEditor({ saveMemory, attachMedia }: { saveMemory: (memory: Memory) => Promise<void>; attachMedia: (ownerType: 'wish' | 'memory', ownerId: string, file: File) => Promise<void> }) {
+  const navigate = useNavigate(); const [title, setTitle] = useState(''); const [body, setBody] = useState(''); const [memoryDate, setMemoryDate] = useState(''); const [files, setFiles] = useState<File[]>([]); const [saving, setSaving] = useState(false); const [error, setError] = useState('')
   const submit = async (event: FormEvent) => {
     event.preventDefault()
     if (!body.trim() || saving) return
     setSaving(true); setError('')
     try {
       const now = new Date().toISOString()
-      await saveMemory({ id: crypto.randomUUID(), title: title.trim(), body: body.trim(), memoryDate: memoryDate || undefined, createdAt: now, updatedAt: now, categoryIds: [], tagIds: [], mediaIds: [], linkedWishIds: [] })
+      const memoryId = crypto.randomUUID()
+      await saveMemory({ id: memoryId, title: title.trim(), body: body.trim(), memoryDate: memoryDate || undefined, createdAt: now, updatedAt: now, categoryIds: [], tagIds: [], mediaIds: [], linkedWishIds: [] })
+      for (const file of files) await attachMedia('memory', memoryId, file)
       navigate('/memories')
     } catch {
-      setError('Your memory could not be saved yet. Nothing has been lost. Try again.')
+      setError('Your memory was saved, but one or more attachments could not be added. You can try again from the Memories page.')
       setSaving(false)
     }
   }
-  return <div className="page writing-page"><button className="back-link" onClick={() => navigate(-1)}><ArrowLeft size={17} /> Back</button><PageHeader eyebrow="A NEW MEMORY" title="What do you want to remember?" description="The ordinary moments often become the ones we keep." /><form className="writing-form" onSubmit={submit}><label className="writing-field"><span>TITLE <em>(OPTIONAL)</em></span><input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="A name for this moment" /></label><label className="writing-field"><span>WHEN DID THIS HAPPEN? <em>(OPTIONAL)</em></span><input type="date" value={memoryDate} onChange={(event) => setMemoryDate(event.target.value)} max={MAX_BIRTH_DATE} /></label><label className="writing-field"><span>YOUR MEMORY</span><textarea autoFocus value={body} onChange={(event) => setBody(event.target.value)} placeholder="Tell it like you remember it…" rows={8} required /></label>{error && <p className="form-error" role="alert">{error}</p>}<button className="save-button" disabled={!body.trim() || saving}>{saving ? 'Saving your memory…' : 'Save this memory'}</button></form></div>
+  const addFiles = (event: ChangeEvent<HTMLInputElement>) => { const selected = Array.from(event.target.files ?? []); setFiles((current) => [...current, ...selected]); event.target.value = '' }
+  return <div className="page writing-page"><button className="back-link" onClick={() => navigate(-1)}><ArrowLeft size={17} /> Back</button><PageHeader eyebrow="A NEW MEMORY" title="What do you want to remember?" description="The ordinary moments often become the ones we keep." /><form className="writing-form" onSubmit={submit}><label className="writing-field"><span>TITLE <em>(OPTIONAL)</em></span><input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="A name for this moment" /></label><label className="writing-field"><span>WHEN DID THIS HAPPEN? <em>(OPTIONAL)</em></span><input type="date" value={memoryDate} onChange={(event) => setMemoryDate(event.target.value)} max={MAX_BIRTH_DATE} /></label><label className="writing-field"><span>YOUR MEMORY</span><textarea autoFocus value={body} onChange={(event) => setBody(event.target.value)} placeholder="Tell it like you remember it…" rows={8} required /></label><div className="memory-attachments"><span className="eyebrow">ATTACHMENTS <em>(OPTIONAL)</em></span><p>Keep a photo, voice note, or video with this memory.</p><label className="button secondary small">Add photos, audio, or video<input type="file" accept="image/*,audio/*,video/*" multiple hidden onChange={addFiles} /></label>{files.length > 0 && <ul>{files.map((file, index) => <li key={`${file.name}-${index}`}><span>{file.name}</span><button type="button" className="text-button" onClick={() => setFiles((current) => current.filter((_, fileIndex) => fileIndex !== index))}>Remove</button></li>)}</ul>}</div>{error && <p className="form-error" role="alert">{error}</p>}<button className="save-button" disabled={!body.trim() || saving}>{saving ? 'Saving your memory…' : 'Save this memory'}</button></form></div>
 }
 
 function SettingsPage({ security, setSecurity, lock }: { security: SecuritySettings; setSecurity: (settings: SecuritySettings) => void; lock: () => void }) {
