@@ -104,7 +104,7 @@ function CompassMark() {
 }
 
 function AmbientAtmosphere() {
-  return <div className="ambient-atmosphere" aria-hidden="true"><span className="atmosphere-blob blob-one" /><span className="atmosphere-blob blob-two" /><span className="atmosphere-contours" /></div>
+  return <div className="ambient-atmosphere" aria-hidden="true"><span className="atmosphere-blob blob-one" /><span className="atmosphere-blob blob-two" /></div>
 }
 
 function App() {
@@ -336,7 +336,7 @@ function AtlasPage({ wishes, categories, memories }: { wishes: Wish[]; categorie
     <section className="section-block"><div className="section-heading"><h2>Your world, so far</h2><NavLink to="/wishes">Explore all <span aria-hidden="true">→</span></NavLink></div>
       <div className="category-grid">{categories.map((category, index) => {
         const count = wishes.filter((wish) => wish.categoryIds.includes(category.id)).length
-        return <NavLink to={`/wishes?category=${category.id}`} className={`category-card category-${index % 4}`} key={category.id}><span className="category-icon">{index === 0 ? <Compass /> : index === 1 ? <Archive /> : index === 2 ? <Heart /> : <Sparkles />}<span className="category-orbit" /></span><span className="category-name">{category.name}</span><span className="category-copy">{category.description}</span><span className="category-count">{count ? `${count} ${count === 1 ? 'wish' : 'wishes'}` : 'A space for what matters.'}</span></NavLink>
+        return <NavLink to={`/wishes?category=${category.id}`} className={`category-card category-${index % 4}`} key={category.id}><span className="category-icon">{index === 0 ? <Compass /> : index === 1 ? <Archive /> : index === 2 ? <Heart /> : <Sparkles />}</span><span className="category-name">{category.name}</span><span className="category-copy">{category.description}</span><span className="category-count">{count ? `${count} ${count === 1 ? 'wish' : 'wishes'}` : 'A space for what matters.'}</span></NavLink>
       })}</div>
     </section>
     {wishes.length === 0 && <div className="empty-card"><WandSparkles size={20} /><div><h3>There is room for your first wish.</h3><p>It can be ambitious, ordinary, or still taking shape. One sentence is enough.</p></div></div>}
